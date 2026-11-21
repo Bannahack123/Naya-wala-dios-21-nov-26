@@ -76,6 +76,20 @@ export class UnProgressionStore {
     this.persist();
   }
 
+  public replaceAllData(nextData: YearProgressionStore) {
+    if (!nextData || typeof nextData !== 'object') return;
+    const normalized: YearProgressionStore = {};
+    MONTH_CODES.forEach(m => {
+      normalized[m] = {};
+      const monthSrc = nextData[m] || {};
+      MASTER_PRODUCTS.forEach(p => {
+        normalized[m][p.sn] = monthSrc[p.sn] || { netPri: 0, netSec: 0, closing: 0 };
+      });
+    });
+    this.data = normalized;
+    this.persist();
+  }
+
   public resetToSeed() {
     localStorage.removeItem(STORAGE_KEY);
     this.data = this.loadFromStorage();

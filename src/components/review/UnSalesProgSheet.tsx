@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Table2, Search, Zap, Download, Check, Info, Trash2, RefreshCw } from 'lucide-react';
 import { MASTER_PRODUCTS } from '../../data/masterProducts';
 import { unProgressionStore, MONTH_CODES } from '../../data/unProgressionStore';
-import { memoryStore } from '../../data/memoryStore';
+import { memoryStore, MONTH_CODE_TO_FULL } from '../../data/memoryStore';
 import { CloudSyncBar } from '../CloudSyncBar';
 
 const INITIAL_BASE_PRIMARY: Record<string, string> = {
@@ -43,8 +43,34 @@ export const UnSalesProgSheet: React.FC = () => {
   };
 
   const handleAutoSyncFromMemory = () => {
+    const fullMonth = MONTH_CODE_TO_FULL[targetMonth];
+    const aggState = fullMonth ? memoryStore.aggregatorByMonth[fullMonth] : undefined;
+    const partyList = aggState?.partyDataMap ? Object.values(aggState.partyDataMap) : [];
+    const hasAggData = Boolean(aggState?.primaryData) || partyList.length > 0;
+
+    if (hasAggData && aggState) {
+      const computed = MASTER_PRODUCTS.map(m => {
+        const netPri = aggState.primaryData?.items?.[m.sn]?.sales || 0;
+        let netSec = 0;
+        let closing = 0;
+        partyList.forEach(summary => {
+          const item = summary?.items?.[m.sn];
+          if (item) {
+            netSec += item.sales || 0;
+            closing += item.closing || 0;
+          }
+        });
+        return { sn: m.sn, netPri, netSec, closing };
+      });
+      unProgressionStore.syncFromAggregator(targetMonth, computed);
+    }
+
     setGridData({ ...unProgressionStore.getData() });
-    setStatusMsg(`🎉 Synced '${targetMonth}' from Statement Aggregator!`);
+    setStatusMsg(
+      hasAggData
+        ? `🎉 Synced '${targetMonth}' directly from Statement Aggregator (${partyList.length} Parties)!`
+        : `🎉 Synced '${targetMonth}' from Statement Aggregator / Data Hub!`
+    );
     setTimeout(() => setStatusMsg(null), 3500);
   };
 
@@ -141,7 +167,12 @@ export const UnSalesProgSheet: React.FC = () => {
             <span className="text-xs text-slate-400 font-semibold">Month:</span>
             <select
               value={targetMonth}
-              onChange={(e) => setTargetMonth(e.target.value)}
+              onChange={(e) => {
+                setTargetMonth(e.target.value);
+                try {
+                  localStorage.setItem('dios_draft_sheet_04_target_month', e.target.value);
+                } catch (err) {}
+              }}
               className="bg-transparent text-xs font-bold text-cyan-400 focus:outline-none cursor-pointer"
             >
               {MONTH_CODES.map(m => (
@@ -194,14 +225,14 @@ export const UnSalesProgSheet: React.FC = () => {
         onLoadData={(cloudData: any) => {
           if (!cloudData) return;
           if (cloudData.progressionData) {
-            setGridData(cloudData.progressionData);
-            unProgressionStore.syncFromAggregator('AUG', []); // refresh store
-            try {
-              localStorage.setItem('dios_un_sales_progression_v1', JSON.stringify(cloudData.progressionData));
-            } catch (e) {}
+            unProgressionStore.replaceAllData(cloudData.progressionData);
+            setGridData({ ...unProgressionStore.getData() });
           }
           if (cloudData.targetMonth) {
             setTargetMonth(cloudData.targetMonth);
+            try {
+              localStorage.setItem('dios_draft_sheet_04_target_month', cloudData.targetMonth);
+            } catch (e) {}
           }
         }}
         onSaveLocal={() => {

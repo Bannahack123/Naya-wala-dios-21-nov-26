@@ -4,7 +4,7 @@ import {
   MessageSquare, Plus, Trash2, X, Info, UploadCloud, RefreshCw,
   Search, DollarSign, Stethoscope, Sparkles, Edit3, Settings2
 } from 'lucide-react';
-import { memoryStore, PartyBreakdownItem, DEFAULT_STOCKISTS, MslDoctor } from '../../data/memoryStore';
+import { memoryStore, PartyBreakdownItem, DEFAULT_STOCKISTS, MslDoctor, getDhruviEntriesForMonthCode } from '../../data/memoryStore';
 import { MASTER_123_MSL_DOCTORS } from './MslSheet';
 import { unProgressionStore } from '../../data/unProgressionStore';
 import { MASTER_PRODUCTS } from '../../data/masterProducts';
@@ -76,7 +76,7 @@ const INITIAL_BASE: Record<string, Record<string, string>> = {
 };
 
 class SalesPerformanceErrorBoundary extends Component<{children: ReactNode}, {hasError: boolean, error: any}> {
-  state = { hasError: false, error: null };
+  state: {hasError: boolean, error: any} = { hasError: false, error: null };
   static getDerivedStateFromError(error: any) { return { hasError: true, error }; }
   componentDidCatch(error: Error, errorInfo: ErrorInfo) { console.error("SalesPerformance Error:", error, errorInfo); }
   render() {
@@ -293,7 +293,7 @@ const SalesPerformanceContent: React.FC = () => {
 
   const toggleDhruviMode = (month: string) => {
     const currentMode = dhruviModes[month] || 'MANUAL';
-    const nextMode = currentMode === 'MANUAL' ? 'STATEMENT' : 'MANUAL';
+    const nextMode: 'MANUAL' | 'STATEMENT' = currentMode === 'MANUAL' ? 'STATEMENT' : 'MANUAL';
     
     const newModes = { ...dhruviModes, [month]: nextMode };
     setDhruviModes(newModes);
@@ -302,9 +302,10 @@ const SalesPerformanceContent: React.FC = () => {
     } catch (e) {}
 
     if (nextMode === 'STATEMENT') {
+      const monthEntries = getDhruviEntriesForMonthCode(month);
       let dhruviPtsVal = 0;
       MASTER_PRODUCTS.forEach(p => {
-        const entry = memoryStore.dhruviEntries?.[p.sn];
+        const entry = monthEntries?.[p.sn];
         if (entry && entry.salesQty) {
           dhruviPtsVal += entry.salesQty * p.pts;
         }
@@ -338,6 +339,9 @@ const SalesPerformanceContent: React.FC = () => {
     setFormData(prev => {
       const updated = { ...prev, sec_curr: newSecCurr, closing_stock: newClosingStock };
       memoryStore.salesPerformanceData = updated;
+      try {
+        localStorage.setItem('dios_draft_sheet_03_sales_perf', JSON.stringify({ formData: updated, salesBreakdown: memoryStore.salesBreakdown, selectedMonth, dhruviModes }));
+      } catch (e) {}
       return updated;
     });
     setStatusMsg('🎉 Successfully auto-synced Secondary 26-27 & Closing Stock from Data Hub!');
@@ -433,10 +437,22 @@ const SalesPerformanceContent: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from_month: selectedMonth, to_month: selectedMonth, fy_year: '2026-2027' })
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Codespace Server offline ya invalid response (${res.status}). Settings me server status check karein.`);
+      }
+      if (!res.ok) {
+        throw new Error(data?.error || `Server error (${res.status})`);
+      }
       if (data && data.success) {
         const cboLacs = String(data.net_sales_lacs || '0');
         
+        if (data.sales_return_breakdown) memoryStore.salesBreakdown[`sales_returns_${targetCode}`] = data.sales_return_breakdown;
+        if (data.expiry_breakdown) memoryStore.salesBreakdown[`expiry_${targetCode}`] = data.expiry_breakdown;
+
         setFormData(prev => {
           const dhr = parseFloat(prev.dhruvi_primary?.[targetCode] || '0') || 0;
           const net = (parseFloat(cboLacs) + dhr).toFixed(2);
@@ -449,11 +465,11 @@ const SalesPerformanceContent: React.FC = () => {
             expiry: { ...prev.expiry, [targetCode]: String(data.expiry || '0') },
           };
           memoryStore.salesPerformanceData = updated;
+          try {
+            localStorage.setItem('dios_draft_sheet_03_sales_perf', JSON.stringify({ formData: updated, salesBreakdown: memoryStore.salesBreakdown, selectedMonth, dhruviModes }));
+          } catch (e) {}
           return updated;
         });
-
-        if (data.sales_return_breakdown) memoryStore.salesBreakdown[`sales_returns_${targetCode}`] = data.sales_return_breakdown;
-        if (data.expiry_breakdown) memoryStore.salesBreakdown[`expiry_${targetCode}`] = data.expiry_breakdown;
         
         setStatusMsg(`🎉 SUCCESS! CBO Primary ${cboLacs}L, Returns ₹${data.sales_return}, Expiry ₹${data.expiry}!`);
       } else {

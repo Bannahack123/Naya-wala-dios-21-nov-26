@@ -420,7 +420,19 @@ export const EffortLevelSheet: React.FC = () => {
   };
 
   const handleAutoFillFromFwProgress = () => {
-    const fwEntries: FwDayEntry[] = memoryStore.dcrDataByMonth[targetMonth];
+    let fwEntries: FwDayEntry[] = memoryStore.dcrDataByMonth[targetMonth];
+    if (!fwEntries || fwEntries.length === 0) {
+      try {
+        const savedFw = localStorage.getItem('dios_draft_sheet_02_fw_progress');
+        if (savedFw) {
+          const parsed = JSON.parse(savedFw);
+          if (parsed?.dcrDataByMonth) {
+            memoryStore.dcrDataByMonth = { ...parsed.dcrDataByMonth, ...memoryStore.dcrDataByMonth };
+            fwEntries = memoryStore.dcrDataByMonth[targetMonth];
+          }
+        }
+      } catch (e) {}
+    }
     if (!fwEntries || fwEntries.length === 0) {
       alert(`⚠️ '${targetMonth}' ka koi FW Progress data memory mein nahi hai!`);
       return;

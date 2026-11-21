@@ -212,8 +212,43 @@ export function getManualDraft(month: string, partyId: string): ManualPartyDraft
   return null;
 }
 
+export const MONTH_CODE_TO_FULL: Record<string, string> = {
+  APR: 'APRIL',
+  MAY: 'MAY',
+  JUN: 'JUNE',
+  JUL: 'JULY',
+  AUG: 'AUGUST',
+  SEP: 'SEPTEMBER',
+  OCT: 'OCTOBER',
+  NOV: 'NOVEMBER',
+  DEC: 'DECEMBER',
+  JAN: 'JANUARY',
+  FEB: 'FEBRUARY',
+  MAR: 'MARCH',
+};
+
+export function getDhruviEntriesForMonthCode(monthCode: string): Record<number, DhruviProductEntry> {
+  const code = (monthCode || '').toUpperCase().substring(0, 3);
+  const fullMonth = MONTH_CODE_TO_FULL[code];
+  if (fullMonth) {
+    const draft = memoryStore.manualDrafts[getManualDraftKey(fullMonth, 'dhruvi')];
+    if (draft?.entries && Object.keys(draft.entries).length > 0) {
+      return draft.entries;
+    }
+    const activeMonth = (memoryStore.aggregatorSelectedMonth || 'AUGUST').toUpperCase();
+    if (fullMonth === activeMonth && Object.keys(memoryStore.dhruviEntries || {}).length > 0) {
+      return memoryStore.dhruviEntries;
+    }
+    return {};
+  }
+  return memoryStore.dhruviEntries || {};
+}
+
 export function setManualDraft(month: string, partyId: string, draft: ManualPartyDraft | null): void {
-  const key = getManualDraftKey(month, partyId);
+  const normalizedMonth = (month || 'AUGUST').toUpperCase();
+  const key = getManualDraftKey(normalizedMonth, partyId);
+  const activeMonth = (memoryStore.aggregatorSelectedMonth || 'AUGUST').toUpperCase();
+
   if (draft) {
     memoryStore.manualDrafts[key] = draft;
     if (partyId === 'dhruvi') {
@@ -224,7 +259,7 @@ export function setManualDraft(month: string, partyId: string, draft: ManualPart
     }
   } else {
     delete memoryStore.manualDrafts[key];
-    if (partyId === 'dhruvi') {
+    if (partyId === 'dhruvi' && normalizedMonth === activeMonth) {
       memoryStore.dhruviEntries = {};
       memoryStore.dhruviManualPtsTotal = '';
       memoryStore.dhruviManualPtrTotal = '';
@@ -235,16 +270,20 @@ export function setManualDraft(month: string, partyId: string, draft: ManualPart
 }
 
 export function clearManualDraftsForMonth(month: string): void {
-  const prefix = `${month.toUpperCase()}_`;
+  const normalizedMonth = (month || 'AUGUST').toUpperCase();
+  const prefix = `${normalizedMonth}_`;
   Object.keys(memoryStore.manualDrafts).forEach((k) => {
     if (k.startsWith(prefix)) {
       delete memoryStore.manualDrafts[k];
     }
   });
-  memoryStore.dhruviEntries = {};
-  memoryStore.dhruviManualPtsTotal = '';
-  memoryStore.dhruviManualPtrTotal = '';
-  memoryStore.dhruviValuationMode = 'PTS';
+  const activeMonth = (memoryStore.aggregatorSelectedMonth || 'AUGUST').toUpperCase();
+  if (normalizedMonth === activeMonth) {
+    memoryStore.dhruviEntries = {};
+    memoryStore.dhruviManualPtsTotal = '';
+    memoryStore.dhruviManualPtrTotal = '';
+    memoryStore.dhruviValuationMode = 'PTS';
+  }
   saveAggregatorDraftToStorage();
 }
 

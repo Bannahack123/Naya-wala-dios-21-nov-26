@@ -75,7 +75,7 @@ export const CommitmentSheet: React.FC = () => {
     return 3;
   });
 
-  const [commitmentData, setCommitmentData] = useState(() => {
+  const [commitmentData, setCommitmentData] = useState<Record<string, string>>(() => {
     try {
       const draft = localStorage.getItem('dios_draft_sheet_06_commitment');
       if (draft) {
@@ -157,7 +157,19 @@ export const CommitmentSheet: React.FC = () => {
   };
 
   const handleAutoFillFromPerformance = () => {
-    const sp = memoryStore.salesPerformanceData;
+    let sp = memoryStore.salesPerformanceData;
+    if (!sp) {
+      try {
+        const draft = localStorage.getItem('dios_draft_sheet_03_sales_perf');
+        if (draft) {
+          const parsed = JSON.parse(draft);
+          if (parsed?.formData) {
+            memoryStore.salesPerformanceData = parsed.formData;
+            sp = parsed.formData;
+          }
+        }
+      } catch (e) {}
+    }
     if (!sp) {
       alert('Pehle "3. Sales Performance" section me data save karein!');
       return;
