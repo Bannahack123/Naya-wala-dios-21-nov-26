@@ -1,17 +1,22 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ArrowLeft, PackageCheck, Zap, Upload, FileSpreadsheet, Download, CheckCircle2, 
   Trash2, Eye, X, RefreshCw, Layers, Building2, Search, Calculator,
-  Package, Bot, Sparkles, Check, Loader2, Calendar, AlertTriangle, 
+  Package, Bot, Check, Loader2, Calendar, AlertTriangle, 
   FileSpreadsheet as ExcelIcon, Edit3
 } from 'lucide-react';
 import { MASTER_PRODUCTS } from '../data/masterProducts';
 import { parsePartyFile, parsePrimaryFile, PartyParseSummary, matchMasterProduct } from '../parsers';
 import { exportToExcel } from '../utils/excelExporter';
-import { unProgressionStore, MONTH_CODES } from '../data/unProgressionStore';
+import { unProgressionStore } from '../data/unProgressionStore';
 import { AggregatedProduct } from '../parsers/common';
-import { DhruviManualModal } from './DhruviManualModal';
-import { memoryStore } from '../data/memoryStore';
+import { DhruviManualModal, ManualPartyTarget } from './DhruviManualModal';
+import {
+  memoryStore,
+  saveAggregatorDraftToStorage,
+  setManualDraft,
+  clearManualDraftsForMonth,
+} from '../data/memoryStore';
 
 const MONTHS = [
   'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 
@@ -61,17 +66,62 @@ export interface FullAggregatedProduct extends AggregatedProduct {
   priValue: number;
 }
 
+function buildSummaryFromDhruviEntries(): PartyParseSummary | null {
+  const entries = memoryStore.dhruviEntries || {};
+  const itemsMap: Record<number, { sales: number; closing: number }> = {};
+  let totalSales = 0;
+  let totalClosing = 0;
+  let count = 0;
+
+  MASTER_PRODUCTS.forEach((p) => {
+    const entry = entries[p.sn];
+    if (entry && (entry.salesQty !== 0 || entry.closingQty !== 0)) {
+      itemsMap[p.sn] = { sales: entry.salesQty, closing: entry.closingQty };
+      totalSales += entry.salesQty;
+      totalClosing += entry.closingQty;
+      count++;
+    }
+  });
+
+  if (count === 0) return null;
+  return {
+    partyName: 'Dhruvi',
+    fileName: 'Manual Formula Entry',
+    itemCount: count,
+    totalSales,
+    totalClosing,
+    items: itemsMap,
+  };
+}
+
 export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const [selectedMonth, setSelectedMonth] = useState<string>('AUGUST');
+  const [selectedMonth, setSelectedMonth] = useState<string>(
+    () => memoryStore.aggregatorSelectedMonth || 'AUGUST'
+  );
   const [tableSearch, setTableSearch] = useState('');
   const [loadingPartyId, setLoadingPartyId] = useState<string | null>(null);
 
-  const [partyDataMap, setPartyDataMap] = useState<Record<string, PartyParseSummary>>({});
-  const [primaryData, setPrimaryData] = useState<PartyParseSummary | null>(null);
+  const [partyDataMap, setPartyDataMap] = useState<Record<string, PartyParseSummary>>(() => {
+    const activeMonth = memoryStore.aggregatorSelectedMonth || 'AUGUST';
+    const storedMap = { ...(memoryStore.aggregatorByMonth[activeMonth]?.partyDataMap || {}) };
+    if (!storedMap.dhruvi) {
+      const dhruviSummary = buildSummaryFromDhruviEntries();
+      if (dhruviSummary) {
+        storedMap.dhruvi = dhruviSummary;
+      }
+    }
+    return storedMap;
+  });
+
+  const [primaryData, setPrimaryData] = useState<PartyParseSummary | null>(() => {
+    const activeMonth = memoryStore.aggregatorSelectedMonth || 'AUGUST';
+    return memoryStore.aggregatorByMonth[activeMonth]?.primaryData || null;
+  });
+
   const [selectedProductForModal, setSelectedProductForModal] = useState<FullAggregatedProduct | null>(null);
 
-  // 📝 Dhruvi Modal State
-  const [showDhruviModal, setShowDhruviModal] = useState(false);
+  // Manual Entry Modal Target (supports all 7 distributors + Primary)
+  const [manualTarget, setManualTarget] = useState<ManualPartyTarget | null>(null);
   const [isSavingStockwise, setIsSavingStockwise] = useState(false);
   const [stockwiseSaveStatus, setStockwiseSaveStatus] = useState<string | null>(null);
 
@@ -83,6 +133,32 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [excelLoading, setExcelLoading] = useState(false);
   const [botStatus, setBotStatus] = useState<string>('');
   const [botError, setBotError] = useState<string | null>(null);
+
+  useEffect(() => {
+    memoryStore.aggregatorSelectedMonth = selectedMonth;
+    memoryStore.aggregatorByMonth[selectedMonth] = {
+      partyDataMap,
+      primaryData,
+    };
+    saveAggregatorDraftToStorage();
+  }, [selectedMonth, partyDataMap, primaryData]);
+
+  const handleMonthChange = (nextMonth: string) => {
+    if (nextMonth === selectedMonth) return;
+    memoryStore.aggregatorByMonth[selectedMonth] = {
+      partyDataMap,
+      primaryData,
+    };
+    const nextMonthState = memoryStore.aggregatorByMonth[nextMonth] || {
+      partyDataMap: {},
+      primaryData: null,
+    };
+    memoryStore.aggregatorSelectedMonth = nextMonth;
+    setSelectedMonth(nextMonth);
+    setPartyDataMap(nextMonthState.partyDataMap || {});
+    setPrimaryData(nextMonthState.primaryData || null);
+    saveAggregatorDraftToStorage();
+  };
 
   const activePartyNames = Object.values(partyDataMap).map(p => p.partyName);
 
@@ -159,6 +235,7 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     setLoadingPartyId(partyId);
     try {
       const parsedSummary = await parsePartyFile(partyId, partyName, file);
+      setManualDraft(selectedMonth, partyId, null);
       if (partyId === 'primary') {
         setPrimaryData(parsedSummary);
       } else {
@@ -175,30 +252,39 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     }
   };
 
-  // 🧮 Dhruvi Callbacks
-  const handleDhruviSave = (summary: PartyParseSummary) => {
-    if (summary.itemCount > 0) {
+  // Multi-Party Manual Entry Callbacks
+  const handleManualSave = (summary: PartyParseSummary) => {
+    if (!manualTarget) return;
+
+    if (manualTarget.isPrimary) {
+      setPrimaryData(summary.itemCount > 0 ? summary : null);
+    } else if (summary.itemCount > 0) {
       setPartyDataMap(prev => ({
         ...prev,
-        dhruvi: summary
+        [manualTarget.id]: summary
       }));
     } else {
       setPartyDataMap(prev => {
         const copy = { ...prev };
-        delete copy.dhruvi;
+        delete copy[manualTarget.id];
         return copy;
       });
     }
-    setShowDhruviModal(false);
+    setManualTarget(null);
   };
 
-  const handleDhruviClear = () => {
-    setPartyDataMap(prev => {
-      const copy = { ...prev };
-      delete copy.dhruvi;
-      return copy;
-    });
-    setShowDhruviModal(false);
+  const handleManualClear = () => {
+    if (!manualTarget) return;
+    if (manualTarget.isPrimary) {
+      setPrimaryData(null);
+    } else {
+      setPartyDataMap(prev => {
+        const copy = { ...prev };
+        delete copy[manualTarget.id];
+        return copy;
+      });
+    }
+    setManualTarget(null);
   };
 
   // Method 1: Live JSON Web Scraper Auto-Fill (Untouched Original)
@@ -246,11 +332,18 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           items: itemsMap,
         };
 
-        setPrimaryData(parsedSummary);
-
         const monthPrefix = fromMonth.split('-')[0].toUpperCase();
-        const targetFullMonth = MONTH_MAP_REVERSE[monthPrefix] || 'AUGUST';
-        setSelectedMonth(targetFullMonth);
+        const targetFullMonth = MONTH_MAP_REVERSE[monthPrefix] || selectedMonth;
+        setManualDraft(targetFullMonth, 'primary', null);
+
+        if (targetFullMonth !== selectedMonth) {
+          memoryStore.aggregatorByMonth[selectedMonth] = { partyDataMap, primaryData };
+          const targetState = memoryStore.aggregatorByMonth[targetFullMonth] || { partyDataMap: {}, primaryData: null };
+          memoryStore.aggregatorSelectedMonth = targetFullMonth;
+          setSelectedMonth(targetFullMonth);
+          setPartyDataMap(targetState.partyDataMap || {});
+        }
+        setPrimaryData(parsedSummary);
 
         setBotStatus(`🎉 SUCCESS! Loaded ${matchedCount} Products (${resultData.total_qty} Units)`);
         setTimeout(() => {
@@ -294,11 +387,18 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
       const parsedSummary = await parsePrimaryFile(excelFile, 'Company Primary Dispatch (Live CBO Excel)');
 
-      setPrimaryData(parsedSummary);
-
       const monthPrefix = fromMonth.split('-')[0].toUpperCase();
-      const targetFullMonth = MONTH_MAP_REVERSE[monthPrefix] || 'AUGUST';
-      setSelectedMonth(targetFullMonth);
+      const targetFullMonth = MONTH_MAP_REVERSE[monthPrefix] || selectedMonth;
+      setManualDraft(targetFullMonth, 'primary', null);
+
+      if (targetFullMonth !== selectedMonth) {
+        memoryStore.aggregatorByMonth[selectedMonth] = { partyDataMap, primaryData };
+        const targetState = memoryStore.aggregatorByMonth[targetFullMonth] || { partyDataMap: {}, primaryData: null };
+        memoryStore.aggregatorSelectedMonth = targetFullMonth;
+        setSelectedMonth(targetFullMonth);
+        setPartyDataMap(targetState.partyDataMap || {});
+      }
+      setPrimaryData(parsedSummary);
 
       setBotStatus(`🎉 SUCCESS! Parsed ${parsedSummary.itemCount} Products (${parsedSummary.totalSales} Units) from Excel!`);
       setTimeout(() => {
@@ -312,15 +412,9 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   };
 
   const handleRemoveParty = (partyId: string) => {
+    setManualDraft(selectedMonth, partyId, null);
     if (partyId === 'primary') {
       setPrimaryData(null);
-    } else if (partyId === 'dhruvi') {
-      memoryStore.dhruviEntries = {};
-      setPartyDataMap(prev => {
-        const copy = { ...prev };
-        delete copy.dhruvi;
-        return copy;
-      });
     } else {
       setPartyDataMap(prev => {
         const copy = { ...prev };
@@ -331,10 +425,12 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   };
 
   const handleResetAll = () => {
-    if (window.confirm('Are you sure you want to reset all data on the screen?')) {
+    if (window.confirm(`Are you sure you want to reset all ${selectedMonth} data on the screen?`)) {
       setPartyDataMap({});
       setPrimaryData(null);
-      memoryStore.dhruviEntries = {};
+      clearManualDraftsForMonth(selectedMonth);
+      memoryStore.aggregatorByMonth[selectedMonth] = { partyDataMap: {}, primaryData: null };
+      saveAggregatorDraftToStorage();
       setTableSearch('');
     }
   };
@@ -405,13 +501,10 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </button>
         
         <div className="flex items-center gap-3">
-          <span className="text-[11px] bg-cyan-950 text-cyan-300 border border-cyan-500/40 px-3 py-1 rounded-full font-mono font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-950/50">
-            <Sparkles size={13} className="text-cyan-400 animate-pulse" /> DIOS V53.0 (WITH DHRUVI MANUAL SLOT)
-          </span>
           <span className="text-xs text-slate-400 font-medium">Month:</span>
           <select
             value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
+            onChange={(e) => handleMonthChange(e.target.value)}
             className="bg-slate-900 border border-slate-700 text-cyan-400 text-xs font-bold rounded-lg px-3 py-1.5 focus:outline-none focus:border-cyan-500 cursor-pointer"
           >
             {MONTHS.map(m => (
@@ -431,7 +524,7 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             DIOS Statement Aggregator
           </h1>
           <p className="text-slate-400 text-xs md:text-sm mt-1">
-            Unit Sales Progression (HQ Total) • 6 Local Distributors + Dhruvi (Manual Math) + CBO Primary
+            Unit Sales Progression (HQ Total) · All Stockists Support Upload + Manual Math · Auto-Saved Draft
           </p>
         </div>
 
@@ -498,32 +591,43 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 Company Primary Sales (NET PRI Dispatch)
                 {primaryData && <CheckCircle2 size={16} className="text-emerald-400" />}
               </h3>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-400 font-mono tabular-nums">
                 {primaryData 
-                  ? `Active: ${primaryData.fileName} • Total: ${primaryData.totalSales.toLocaleString()} Units`
-                  : 'Live 1-Click Auto Sync (JSON / Excel) or Local File Upload'}
+                  ? `Active: ${primaryData.fileName} · Total: ${primaryData.totalSales.toLocaleString()} Units`
+                  : 'Live 1-Click Auto Sync (JSON / Excel), Local File Upload, or Manual Entry'}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {primaryData ? (
-              <button
-                onClick={() => handleRemoveParty('primary')}
-                className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-rose-400 text-xs rounded-xl transition cursor-pointer flex items-center gap-1.5"
-              >
-                <Trash2 size={14} /> Clear Primary
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setManualTarget({ id: 'primary', name: 'Company Primary Sales', isPrimary: true })}
+                  className="px-3.5 py-2 bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-300 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Edit3 size={14} /> Edit Manual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveParty('primary')}
+                  className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-rose-400 text-xs rounded-xl transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Trash2 size={14} /> Clear Primary
+                </button>
+              </>
             ) : (
               <>
                 <button
+                  type="button"
                   onClick={() => setShowCboModal(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-cyan-500/20 transition cursor-pointer"
+                  className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-cyan-500/20 transition cursor-pointer whitespace-nowrap"
                 >
-                  <Bot size={15} /> ⚡ Live CBO Fetch
+                  <Bot size={15} /> Live CBO Fetch
                 </button>
 
-                <label className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition cursor-pointer">
+                <label className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition cursor-pointer whitespace-nowrap">
                   <Upload size={14} /> Upload File
                   <input
                     type="file"
@@ -536,19 +640,27 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                     className="hidden"
                   />
                 </label>
+
+                <button
+                  type="button"
+                  onClick={() => setManualTarget({ id: 'primary', name: 'Company Primary Sales', isPrimary: true })}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-300 text-xs font-bold rounded-xl transition cursor-pointer whitespace-nowrap"
+                >
+                  <Edit3 size={14} /> Manual Entry
+                </button>
               </>
             )}
           </div>
         </div>
       </div>
 
-      {/* 7 DISTRIBUTOR SLOTS (6 Statement Uploads + Dhruvi Manual Slot) */}
+      {/* 7 DISTRIBUTOR SLOTS (Upload + Manual Entry Support for All Stockists) */}
       <div className="mb-8">
         <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center justify-between">
           <span className="flex items-center gap-2">
             <Layers size={14} className="text-cyan-400" /> Distributor Secondary Slots ({activePartyNames.length}/7 Active)
           </span>
-          <span className="text-[11px] text-slate-500 normal-case">6 Statement Uploads + Dhruvi Manual Formula Sheet</span>
+          <span className="text-[11px] text-slate-500 normal-case">Statement Upload or Manual Math Sheet for Every Stockist</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -576,13 +688,15 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                         <Building2 size={16} className={isUploaded ? 'text-emerald-400' : isDhruvi ? 'text-amber-400' : 'text-slate-500'} />
                         {party.name}
                         {isUploaded && <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
-                        {isDhruvi && <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.2 rounded font-mono">Manual</span>}
                       </h3>
-                      <p className="text-[11px] text-slate-400">{party.location} • <span className={isDhruvi ? 'text-amber-400 font-semibold' : 'text-cyan-400'}>{party.software}</span></p>
+                      <p className="text-[11px] text-slate-400">
+                        {party.location} · <span className={isDhruvi ? 'text-amber-400 font-semibold' : 'text-cyan-400'}>{party.software}</span>
+                      </p>
                     </div>
 
                     {isUploaded && (
                       <button
+                        type="button"
                         onClick={() => handleRemoveParty(party.id)}
                         className="p-1 text-slate-500 hover:text-rose-400 rounded-lg transition cursor-pointer"
                         title="Remove"
@@ -593,9 +707,9 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   </div>
 
                   {isUploaded && (
-                    <div className="my-2.5 p-2.5 bg-slate-950/90 rounded-xl border border-emerald-500/30 text-xs space-y-1">
-                      <div className="flex justify-between text-slate-400">
-                        <span>Status:</span> <span className="text-emerald-300 font-bold">{data.fileName}</span>
+                    <div className="my-2.5 pt-2.5 border-t border-emerald-500/20 text-xs space-y-1 font-mono tabular-nums">
+                      <div className="flex justify-between gap-2 text-slate-400">
+                        <span>Source:</span> <span className="text-emerald-300 font-bold truncate max-w-[160px]" title={data.fileName}>{data.fileName}</span>
                       </div>
                       <div className="flex justify-between text-slate-400">
                         <span>Sales Units:</span> <span className="text-cyan-400 font-bold">{data.totalSales.toLocaleString()}</span>
@@ -611,8 +725,8 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   {isDhruvi ? (
                     <button
                       type="button"
-                      onClick={() => setShowDhruviModal(true)}
-                      className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold cursor-pointer transition ${
+                      onClick={() => setManualTarget({ id: party.id, name: party.name })}
+                      className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold cursor-pointer transition whitespace-nowrap ${
                         isUploaded 
                           ? 'bg-amber-950/60 border border-amber-500/40 text-amber-300 hover:bg-amber-900/60' 
                           : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
@@ -622,25 +736,42 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                       {isUploaded ? 'Edit Dhruvi Math Sheet' : 'Open Dhruvi Math Sheet'}
                     </button>
                   ) : (
-                    <label className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-semibold cursor-pointer transition ${
-                      isUploaded 
-                        ? 'bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300' 
-                        : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-md shadow-cyan-600/20'
-                    }`}>
-                      <Upload size={14} className={isLoading ? 'animate-spin' : ''} />
-                      {isLoading ? 'Processing File...' : isUploaded ? 'Replace Statement' : 'Upload Statement'}
-                      <input
-                        type="file"
-                        accept=".xls,.xlsx,.csv,.pdf,application/pdf"
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-semibold cursor-pointer transition whitespace-nowrap ${
+                        isUploaded 
+                          ? 'bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300' 
+                          : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-md shadow-cyan-600/20'
+                      }`}>
+                        <Upload size={13} className={isLoading ? 'animate-spin' : ''} />
+                        {isLoading ? 'Parsing...' : isUploaded ? 'Replace' : 'Upload'}
+                        <input
+                          type="file"
+                          accept=".xls,.xlsx,.csv,.pdf,application/pdf"
+                          disabled={isLoading}
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              handleSingleFileUpload(party.id, party.name, e.target.files[0]);
+                            }
+                            e.currentTarget.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <button
+                        type="button"
                         disabled={isLoading}
-                        onChange={(e) => {
-                          if (e.target.files && e.target.files[0]) {
-                            handleSingleFileUpload(party.id, party.name, e.target.files[0]);
-                          }
-                        }}
-                        className="hidden"
-                      />
-                    </label>
+                        onClick={() => setManualTarget({ id: party.id, name: party.name })}
+                        className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-bold cursor-pointer transition whitespace-nowrap ${
+                          isUploaded
+                            ? 'bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/40 text-amber-300'
+                            : 'bg-slate-900 hover:bg-slate-800 border border-amber-500/40 text-amber-300'
+                        }`}
+                      >
+                        <Edit3 size={13} />
+                        {isUploaded ? 'Edit Manual' : 'Manual'}
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -768,13 +899,23 @@ export const DiosWorkspace: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         </table>
       </div>
 
-      {/* 🧮 DHRUVI ISOLATED MODAL (Rendered From Separate Component) */}
-      <DhruviManualModal
-        isOpen={showDhruviModal}
-        onClose={() => setShowDhruviModal(false)}
-        onSave={handleDhruviSave}
-        onClear={handleDhruviClear}
-      />
+      {/* REUSABLE MULTI-PARTY MANUAL ENTRY MODAL */}
+      {manualTarget && (
+        <DhruviManualModal
+          key={`${selectedMonth}_${manualTarget.id}`}
+          isOpen={true}
+          party={manualTarget}
+          selectedMonth={selectedMonth}
+          existingSummary={
+            manualTarget.isPrimary
+              ? primaryData
+              : partyDataMap[manualTarget.id] || null
+          }
+          onClose={() => setManualTarget(null)}
+          onSave={handleManualSave}
+          onClear={handleManualClear}
+        />
+      )}
 
       {/* CBO MODAL */}
       {showCboModal && (

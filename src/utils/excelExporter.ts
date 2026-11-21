@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx-js-style';
 import { AggregatedProduct } from '../parsers/common';
-import { memoryStore } from '../data/memoryStore';
+import { getPartyValuationConfig } from '../data/memoryStore';
 import { MASTER_PRODUCTS } from '../data/masterProducts';
 
 const MONTHS = ['APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER', 'JANUARY', 'FEBRUARY', 'MARCH'];
@@ -91,27 +91,27 @@ export function exportToExcel(
   activeParties: string[],
   summary: { totalSalesUnits: number; totalClosingUnits: number; totalSalesValue: number; totalClosingValue: number; totalPriUnits?: number; totalPriValue?: number }
 ) {
-  const mode = memoryStore.dhruviValuationMode || 'PTS';
   const prodMap = new Map(MASTER_PRODUCTS.map(p => [p.sn, p]));
 
-  // Calculate Party Wise Values with Dhruvi Mode Support
+  // Calculate Party Wise Values with Multi-Party Manual Mode Support
   const partySalesValues: Record<string, number> = {};
   const partyClosingValues: Record<string, number> = {};
 
   activeParties.forEach(party => {
-    const isDhruvi = party.toLowerCase().includes('dhruvi');
+    const valConfig = getPartyValuationConfig(selectedMonth, party);
+    const mode = valConfig?.valuationMode || 'PTS';
     let sVal = 0;
     let cVal = 0;
 
-    if (isDhruvi) {
-      if (mode === 'MANUAL_PTR' && parseFloat(memoryStore.dhruviManualPtrTotal)) {
-        sVal = parseFloat(memoryStore.dhruviManualPtrTotal.replace(/,/g, '')) || 0;
+    if (valConfig) {
+      if (mode === 'MANUAL_PTR' && parseFloat(valConfig.manualPtrTotal)) {
+        sVal = parseFloat(valConfig.manualPtrTotal.replace(/,/g, '')) || 0;
         cVal = products.reduce((acc, p) => {
           const mp = prodMap.get(p.sn);
           return acc + ((p.partyBreakdown[party]?.closing || 0) * (mp?.ptr || p.pts));
         }, 0);
-      } else if (mode === 'MANUAL_PTS' && parseFloat(memoryStore.dhruviManualPtsTotal)) {
-        sVal = parseFloat(memoryStore.dhruviManualPtsTotal.replace(/,/g, '')) || 0;
+      } else if (mode === 'MANUAL_PTS' && parseFloat(valConfig.manualPtsTotal)) {
+        sVal = parseFloat(valConfig.manualPtsTotal.replace(/,/g, '')) || 0;
         cVal = products.reduce((acc, p) => acc + ((p.partyBreakdown[party]?.closing || 0) * p.pts), 0);
       } else if (mode === 'PTR') {
         sVal = products.reduce((acc, p) => {
@@ -292,8 +292,8 @@ export function exportToExcel(
     { v: 'PTS (₹)', s: styleSubColHeader }
   ];
   activeParties.forEach(p => {
-    const isDhruvi = p.toLowerCase().includes('dhruvi');
-    const headerTitle = isDhruvi ? `DHRUVI (${mode})` : p.toUpperCase();
+    const valConfig = getPartyValuationConfig(selectedMonth, p);
+    const headerTitle = valConfig ? `${p.toUpperCase()} (${valConfig.valuationMode})` : p.toUpperCase();
     bRow1.push(
       { v: headerTitle, s: stylePartyHeader },
       { v: '', s: stylePartyHeader }
