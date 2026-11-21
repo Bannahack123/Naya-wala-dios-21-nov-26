@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd /workspaces/Naya-wala-dios-21-nov-2621-nov-26
+cd "$(dirname "$0")"
 
 echo "=========================================================================="
 echo "🚀 STARTING DIOS LIVE SYSTEM (PORT 8000 + PORT 5173)..."
